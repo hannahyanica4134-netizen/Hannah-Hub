@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Hannah 提词器</title>
+<style>
+  :root{
+    --bg:#000; --fg:#fff; --accent:#ff7a59;
+    --fs:48px; --speed:60; /* px per second */
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; height:100%; width:100%;
+    background:var(--bg); color:var(--fg);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    overflow:hidden; overscroll-behavior:none;
+  }
+  button{
+    font-size:22px; padding:14px 18px; border:none; border-radius:14px;
+    background:#1c1c1e; color:#fff; min-width:64px; min-height:56px;
+  }
+  button:active{background:#333;}
+  button.on{background:var(--accent); color:#000;}
+  button.go{background:var(--accent); color:#000; font-weight:700;}
+
+  /* ---- Edit screen ---- */
+  #editScreen{display:flex; flex-direction:column; height:100%;}
+  #topbar{display:flex; gap:8px; padding:10px; align-items:center; flex-wrap:wrap; background:#0a0a0a;}
+  #topbar .title{font-size:20px; font-weight:700; margin-right:auto; color:var(--accent);}
+  #script{
+    flex:1; width:100%; border:none; outline:none; resize:none;
+    background:#000; color:#fff; padding:24px;
+    font-size:var(--fs); line-height:1.5; font-family:inherit;
+  }
+
+  /* ---- Present screen ---- */
+  #presentScreen{display:none; position:fixed; inset:0; background:#000; flex-direction:column;}
+  #progress{height:6px; background:#222;}
+  #progress > i{display:block; height:100%; width:0; background:var(--accent);}
+  #stage{flex:1; overflow:hidden; position:relative; cursor:pointer;}
+  #text{
+    position:absolute; left:0; right:0; top:0; padding:40px 36px;
+    font-size:var(--fs); line-height:1.55; white-space:pre-wrap; word-break:break-word;
+    transform:translateY(0); will-change:transform;
+  }
+  #text.mirror{transform:scaleX(-1);}
+  #playbar{display:flex; gap:8px; padding:10px; align-items:center; flex-wrap:wrap; background:#0a0a0a;}
+  #playbar .spacer{margin-left:auto;}
+  #speedWrap{display:flex; align-items:center; gap:8px; font-size:18px; color:#bbb;}
+  #speed{width:160px; height:40px;}
+  .hint{position:fixed; bottom:90px; left:0; right:0; text-align:center; color:#666; font-size:16px; pointer-events:none;}
+</style>
+</head>
+<body>
+
+<!-- EDIT SCREEN -->
+<div id="editScreen">
+  <div id="topbar">
+    <span class="title">Hannah 提词器</span>
+    <button id="bSmall">A−</button>
+    <button id="bBig">A＋</button>
+    <button id="bMirror">镜像</button>
+    <button id="bFull">全屏</button>
+    <button id="bStart" class="go">▶ 开始</button>
+  </div>
+  <textarea id="script" placeholder="把口播稿粘贴到这里…&#10;每行一句话，读的时候字会自动往上滚。"></textarea>
+</div>
+
+<!-- PRESENT SCREEN -->
+<div id="presentScreen">
+  <div id="progress"><i></i></div>
+  <div id="stage"><div id="text"></div></div>
+  <div class="hint">点屏幕 = 暂停 / 继续</div>
+  <div id="playbar">
+    <button id="bPlay">⏸ 暂停</button>
+    <button id="bReset">↺ 重置</button>
+    <button id="bExit">✕ 退出</button>
+    <span class="spacer"></span>
+    <span id="speedWrap">慢 <input id="speed" type="range" min="20" max="200" value="60"> 快</span>
+  </div>
+</div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const root = document.documentElement;
+  const editScreen = $('editScreen');
+  const presentScreen = $('presentScreen');
+  const script = $('script');
+  const text = $('text');
+  const stage = $('stage');
+  const progress = $('progress').firstElementChild;
+  const speedEl = $('speed');
+
+  // remember last script
+  try { const s = localStorage.getItem('hannah_script'); if (s) script.value = s; } catch(e){}
+  function saveScript(){ try { localStorage.setItem('hannah_script', script.value); } catch(e){} }
+
+  // font size
+  function changeFont(d){ let f = parseInt(getComputedStyle(root).getPropertyValue('--fs')) + d; f = Math.max(24, Math.min(140, f)); root.style.setProperty('--fs', f+'px'); }
+  $('bBig').onclick = () => changeFont(8);
+  $('bSmall').onclick = () => changeFont(-8);
+
+  // mirror toggle (persist on edit screen too)
+  let mirror = false;
+  function setMirror(v){ mirror = v; text.classList.toggle('mirror', mirror); $('bMirror').classList.toggle('on', mirror); }
+  $('bMirror').onclick = () => setMirror(!mirror);
+
+  // fullscreen
+  $('bFull').onclick = () => { try { if(!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); } catch(e){} };
+
+  // speed
+  speedEl.oninput = () => root.style.setProperty('--speed', speedEl.value);
+
+  // ---- scroll engine ----
+  let pos = 0, running = false, raf = 0, last = 0, wakeLock = null;
+
+  function totalScroll(){ return Math.max(0, text.offsetHeight - stage.clientHeight + 80); }
+
+  function loop(t){
+    if(!running) return;
+    if(!last) last = t;
+    const dt = (t - last)/1000; last = t;
+    const speed = parseInt(getComputedStyle(root).getPropertyValue('--speed')) || 60;
+    pos -= speed * dt;
+    const max = totalScroll();
+    if(pos <= -max){ pos = -max; running = false; updatePlayBtn(); releaseWake(); }
+    text.style.transform = (mirror ? 'scaleX(-1) ' : '') + 'translateY('+pos+'px)';
+    progress.style.width = (max ? Math.min(100, -pos/max*100) : 0) + '%';
+    if(running) raf = requestAnimationFrame(loop);
+  }
+
+  function updatePlayBtn(){ $('bPlay').textContent = running ? '⏸ 暂停' : '▶ 继续'; }
+
+  async function requestWake(){
+    try { if('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+  }
+  function releaseWake(){ try { if(wakeLock){ wakeLock.release(); wakeLock=null; } } catch(e){} }
+
+  function start(){
+    saveScript();
+    text.textContent = script.value || '（没有内容）';
+    // reset transforms so measurement is correct
+    text.style.transform = mirror ? 'scaleX(-1)' : 'translateY(0)';
+    editScreen.style.display = 'none';
+    presentScreen.style.display = 'flex';
+    pos = 0; last = 0; running = true;
+    updatePlayBtn();
+    progress.style.width = '0%';
+    requestWake();
+    raf = requestAnimationFrame(loop);
+  }
+  function pause(){ running = false; cancelAnimationFrame(raf); updatePlayBtn(); releaseWake(); }
+  function resume(){ if(pos <= -totalScroll()) return; running = true; last = 0; updatePlayBtn(); requestWake(); raf = requestAnimationFrame(loop); }
+  function toggle(){ running ? pause() : resume(); }
+
+  $('bStart').onclick = start;
+  $('bPlay').onclick = toggle;
+  stage.onclick = toggle;
+  $('bReset').onclick = () => { pos = 0; last = 0; text.style.transform = (mirror?'scaleX(-1) ':'')+'translateY(0)'; progress.style.width='0%'; if(!running) resume(); };
+  $('bExit').onclick = () => { pause(); presentScreen.style.display='none'; editScreen.style.display='flex'; };
+
+  // keep wake lock alive if tab regains focus
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState==='visible' && running) requestWake(); });
+})();
+</script>
+</body>
+</html>
