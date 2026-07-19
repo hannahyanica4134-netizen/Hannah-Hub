@@ -75,6 +75,7 @@
   <div id="playbar">
     <button id="bPlay">⏸ 暂停</button>
     <button id="bVoice">🎤 跟读</button>
+    <button id="bRecognize">🗣 跟读(识别)</button>
     <button id="bReset">↺ 重置</button>
     <button id="bExit">✕ 退出</button>
     <span class="spacer"></span>
@@ -171,13 +172,99 @@
     voiceRAF = requestAnimationFrame(voiceLoop);
   }
 
+  // ---- recognize-follow mode (speech-to-text matches script position) ----
+  let recOn = false, recog = null, recLastFound = 0;
+  let plainText = ''; // raw script for matching
+
+  function normalize(s){ return (s||'').toLowerCase().replace(/[\s，。、！？,.\!\?~～""''「」()（）:：；;]/g, ''); }
+
+  function scrollToChar(idx){
+    // build a temp range to measure y of character idx
+    // simplest: use a hidden mirror of text with same layout is complex;
+    // instead approximate by line/char ratio using text node walk.
+    const max = totalScroll();
+    const target = Math.max(0, Math.min(1, idx / Math.max(1, plainText.length)));
+    const targetPos = -target * max;
+    // animate smoothly to targetPos
+    const startPos = pos, dist = targetPos - pos, t0 = performance.now(), dur = 350;
+    function anim(now){
+      if(!recOn) return;
+      const k = Math.min(1, (now - t0)/dur);
+      const e = 1 - Math.pow(1-k, 3); // ease-out
+      pos = startPos + dist*e;
+      text.style.transform = (mirror ? 'scaleX(-1) ' : '') + 'translateY('+pos+'px)';
+      progress.style.width = (max ? Math.min(100, -pos/max*100) : 0) + '%';
+      if(k < 1) requestAnimationFrame(anim);
+    }
+    requestAnimationFrame(anim);
+  }
+
+  function findInText(spoken){
+    const nSpoken = normalize(spoken);
+    if(!nSpoken) return -1;
+    const nText = normalize(plainText);
+    // try longest match from a window near last found
+    let best = -1;
+    // search whole text (cheap for short scripts)
+    let i = nText.indexOf(nSpoken);
+    if(i >= 0) best = i;
+    // if not found verbatim, try first 6 chars (robust to ASR errors)
+    if(best < 0 && nSpoken.length >= 4){
+      const head = nSpoken.slice(0, 6);
+      let j = nText.indexOf(head);
+      if(j >= 0) best = j;
+    }
+    return best;
+  }
+
+  function startRecognize(){
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if(!SR){
+      hintEl.textContent = '⚠️ 此浏览器不支持语音识别（用 Chrome/Edge，iPad 退回跟声音）';
+      return;
+    }
+    try {
+      recog = new SR();
+      recog.lang = 'zh-CN';
+      recog.continuous = true;
+      recog.interimResults = true;
+      recog.onresult = (ev) => {
+        let interim = '';
+        for(let i = ev.resultIndex; i < ev.results.length; i++){
+          const txt = ev.results[i][0].transcript;
+          if(ev.results[i].isFinal) {
+            const idx = findInText(txt);
+            if(idx >= 0){ recLastFound = idx; scrollToChar(idx + normalize(txt).length); }
+          } else { interim = txt; }
+        }
+        if(interim){ const idx = findInText(interim); if(idx >= 0) scrollToChar(idx); }
+      };
+      recog.onerror = (e) => { if(e.error === 'not-allowed') hintEl.textContent = '⚠️ 麦克风/语音被拒绝'; };
+      recog.onend = () => { if(recOn){ try { recog.start(); } catch(e){} } }; // auto-restart
+      recog.start();
+      recOn = true;
+      $('bRecognize').classList.add('on');
+      hintEl.textContent = '🗣 跟读(识别)中：念到哪，字滚到哪';
+      pause(); running = true; updatePlayBtn();
+    } catch(e){
+      hintEl.textContent = '⚠️ 无法启动语音识别';
+      $('bRecognize').classList.remove('on');
+    }
+  }
+  function stopRecognize(){
+    recOn = false;
+    if(recog){ try { recog.stop(); } catch(e){} recog = null; }
+    $('bRecognize').classList.remove('on');
+    hintEl.textContent = '点屏幕 = 暂停 / 继续';
+  }
+
   // ---- scroll engine ----
   let pos = 0, running = false, raf = 0, last = 0, wakeLock = null;
 
   function totalScroll(){ return Math.max(0, text.offsetHeight - stage.clientHeight + 80); }
 
   function loop(t){
-    if(!running || voiceOn) return;   // voice mode drives scroll itself
+    if(!running || voiceOn || recOn) return;   // voice/recognize modes drive scroll themselves
     if(!last) last = t;
     const dt = (t - last)/1000; last = t;
     const speed = parseInt(getComputedStyle(root).getPropertyValue('--speed')) || 60;
@@ -199,6 +286,7 @@
   function start(){
     saveScript();
     text.textContent = script.value || '（没有内容）';
+    plainText = script.value || '';
     // reset transforms so measurement is correct
     text.style.transform = mirror ? 'scaleX(-1)' : 'translateY(0)';
     editScreen.style.display = 'none';
@@ -217,11 +305,12 @@
   $('bPlay').onclick = toggle;
   stage.onclick = toggle;
   $('bVoice').onclick = () => { voiceOn ? disableVoice() : enableVoice(); };
-  $('bReset').onclick = () => { pos = 0; last = 0; text.style.transform = (mirror?'scaleX(-1) ':'')+'translateY(0)'; progress.style.width='0%'; if(!running && !voiceOn) resume(); };
-  $('bExit').onclick = () => { disableVoice(); pause(); presentScreen.style.display='none'; editScreen.style.display='flex'; };
+  $('bRecognize').onclick = () => { recOn ? stopRecognize() : startRecognize(); };
+  $('bReset').onclick = () => { pos = 0; last = 0; text.style.transform = (mirror?'scaleX(-1) ':'')+'translateY(0)'; progress.style.width='0%'; if(!running && !voiceOn && !recOn) resume(); };
+  $('bExit').onclick = () => { disableVoice(); stopRecognize(); pause(); presentScreen.style.display='none'; editScreen.style.display='flex'; };
 
   // keep wake lock alive if tab regains focus
-  document.addEventListener('visibilitychange', () => { if(document.visibilityState==='visible' && running && !voiceOn) requestWake(); });
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState==='visible' && running && !voiceOn && !recOn) requestWake(); });
 })();
 </script>
 </body>
