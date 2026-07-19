@@ -71,9 +71,10 @@
 <div id="presentScreen">
   <div id="progress"><i></i></div>
   <div id="stage"><div id="text"></div></div>
-  <div class="hint">点屏幕 = 暂停 / 继续</div>
+  <div class="hint" id="hint">点屏幕 = 暂停 / 继续</div>
   <div id="playbar">
     <button id="bPlay">⏸ 暂停</button>
+    <button id="bVoice">🎤 跟读</button>
     <button id="bReset">↺ 重置</button>
     <button id="bExit">✕ 退出</button>
     <span class="spacer"></span>
@@ -113,13 +114,70 @@
   // speed
   speedEl.oninput = () => root.style.setProperty('--speed', speedEl.value);
 
+  // ---- voice-follow mode (microphone drives scroll, local only) ----
+  let voiceOn = false, audioCtx = null, analyser = null, micStream = null, voiceRAF = 0;
+  let level = 0; // smoothed volume 0..1
+  const hintEl = $('hint');
+
+  async function enableVoice(){
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const src = audioCtx.createMediaStreamSource(micStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      voiceOn = true;
+      $('bVoice').classList.add('on');
+      hintEl.textContent = '🎤 跟读中：你念字就滚，停嘴就停';
+      // turn off timed scroll; voice loop drives it
+      pause();
+      running = true; last = 0; updatePlayBtn();
+      voiceLoop();
+    } catch(e){
+      hintEl.textContent = '⚠️ 麦克风被拒绝，改用手动/定时模式';
+      $('bVoice').classList.remove('on');
+    }
+  }
+  function disableVoice(){
+    voiceOn = false;
+    cancelAnimationFrame(voiceRAF);
+    if(micStream){ micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    if(audioCtx){ try { audioCtx.close(); } catch(e){} audioCtx = null; }
+    analyser = null;
+    $('bVoice').classList.remove('on');
+    hintEl.textContent = '点屏幕 = 暂停 / 继续';
+  }
+  function voiceLoop(){
+    if(!voiceOn) return;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(buf);
+    // RMS amplitude 0..1
+    let sum = 0;
+    for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum += v*v; }
+    const rms = Math.sqrt(sum/buf.length);
+    // smooth + threshold so breathing/room noise doesn't scroll
+    level = level*0.8 + rms*0.2;
+    const threshold = 0.04;
+    if(level > threshold && pos > -totalScroll()){
+      const gain = (parseInt(getComputedStyle(root).getPropertyValue('--speed'))||60) / 60;
+      // move ~ proportional to how loud you are, scaled by speed slider
+      pos -= (40 + level*400) * gain * (1/60);
+      const max = totalScroll();
+      if(pos <= -max){ pos = -max; }
+      text.style.transform = (mirror ? 'scaleX(-1) ' : '') + 'translateY('+pos+'px)';
+      progress.style.width = (max ? Math.min(100, -pos/max*100) : 0) + '%';
+    }
+    voiceRAF = requestAnimationFrame(voiceLoop);
+  }
+
   // ---- scroll engine ----
   let pos = 0, running = false, raf = 0, last = 0, wakeLock = null;
 
   function totalScroll(){ return Math.max(0, text.offsetHeight - stage.clientHeight + 80); }
 
   function loop(t){
-    if(!running) return;
+    if(!running || voiceOn) return;   // voice mode drives scroll itself
     if(!last) last = t;
     const dt = (t - last)/1000; last = t;
     const speed = parseInt(getComputedStyle(root).getPropertyValue('--speed')) || 60;
@@ -158,11 +216,12 @@
   $('bStart').onclick = start;
   $('bPlay').onclick = toggle;
   stage.onclick = toggle;
-  $('bReset').onclick = () => { pos = 0; last = 0; text.style.transform = (mirror?'scaleX(-1) ':'')+'translateY(0)'; progress.style.width='0%'; if(!running) resume(); };
-  $('bExit').onclick = () => { pause(); presentScreen.style.display='none'; editScreen.style.display='flex'; };
+  $('bVoice').onclick = () => { voiceOn ? disableVoice() : enableVoice(); };
+  $('bReset').onclick = () => { pos = 0; last = 0; text.style.transform = (mirror?'scaleX(-1) ':'')+'translateY(0)'; progress.style.width='0%'; if(!running && !voiceOn) resume(); };
+  $('bExit').onclick = () => { disableVoice(); pause(); presentScreen.style.display='none'; editScreen.style.display='flex'; };
 
   // keep wake lock alive if tab regains focus
-  document.addEventListener('visibilitychange', () => { if(document.visibilityState==='visible' && running) requestWake(); });
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState==='visible' && running && !voiceOn) requestWake(); });
 })();
 </script>
 </body>
