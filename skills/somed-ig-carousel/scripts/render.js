@@ -66,6 +66,7 @@ header{position:absolute;top:56px;left:64px;right:64px;display:flex;align-items:
 .brand{display:flex;align-items:center;gap:18px}
 .logo{width:72px;height:72px;border-radius:50%;border:3px solid ${C.deep};background:#fff;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .logo img{width:100%;height:100%;object-fit:cover}
+.logo.has-img{border:none;box-shadow:0 2px 10px rgba(55,107,76,.18)}
 .logo .txt{font-weight:900;font-size:15px;letter-spacing:1.5px;color:${C.deep}}
 .handle{font-size:30px;font-weight:700;color:${C.deep};letter-spacing:.5px}
 .count{font-size:24px;color:${C.deep};background:rgba(255,255,255,.7);border:1.5px solid ${C.sage};border-radius:999px;padding:6px 20px}
@@ -102,7 +103,7 @@ function frame(s, i, n, ctx, inner, opts = {}) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${CSS}${opts.css || ''}</style></head>
 <body style="--hl:${opts.hl || C.mint}${dark ? `;background:${C.deep}` : ''}">
 ${bg}
-<header><div class="brand"><div class="logo">${logo}</div><div class="handle" ${dark ? `style="color:${C.white}"` : ''}>${ctx.handle}</div></div>
+<header><div class="brand"><div class="logo${ctx.logo ? " has-img" : ""}">${logo}</div><div class="handle" ${dark ? `style="color:${C.white}"` : ''}>${ctx.handle}</div></div>
 ${hint}<div class="count" ${dark ? `style="background:rgba(255,255,255,.1);color:${C.mint};border-color:rgba(200,229,203,.5)"` : ''}>${i}/${n}</div></header>
 ${inner}
 ${s.hook ? `<div class="hook" ${dark ? `style="color:${C.sage}"` : ''}>${md(s.hook)}</div>` : ''}

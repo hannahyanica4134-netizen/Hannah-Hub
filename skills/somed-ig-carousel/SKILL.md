@@ -22,7 +22,7 @@ Derived neutrals (already in the script): ink `#22392B` for headline line 1, bod
 
 ## Logo (top-left circle)
 
-- The script uses `assets/logo.png` (or `.jpg/.svg`) in this skill folder automatically. If it's missing, it prints a warning and shows a text circle reading "SOMED".
+- The official SOMED Skin Studio logo (round green-ring logo, cropped to the circle) is already saved as `assets/logo.png`, and the script uses it automatically (no extra border, just a soft shadow). If it's missing, it prints a warning and shows a text circle reading "SOMED".
 - When Hannah uploads the SOMED logo, copy it to `assets/logo.png` in the skill folder (and keep a copy next to the spec, passing `"logo": "<path>"`, if the skill folder is read-only). If there's no logo, tell her once that the text circle is a placeholder.
 
 ## How to build (every time)
